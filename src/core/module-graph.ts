@@ -4,6 +4,7 @@ import { DependencyScanner } from "./dependency-scanner.js"
 
 export interface ModuleNode {
     id: string,
+    numbericId: number,
     source: string,
     dependencies: string[]
 }
@@ -34,6 +35,7 @@ export class ModuleGraph {
 
         const node: ModuleNode = {
             id,
+            numbericId: this.modules.size,
             source,
             dependencies
         }
