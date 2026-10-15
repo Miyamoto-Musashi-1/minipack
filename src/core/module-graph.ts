@@ -6,7 +6,7 @@ export interface ModuleNode {
     id: string,
     numbericId: number,
     source: string,
-    dependencies: string[]
+    dependencies: Map<string, string>
 }
 
 export class ModuleGraph {
@@ -28,10 +28,14 @@ export class ModuleGraph {
         }
 
         const source = await readFile(id, "utf-8")
-
         const imports = this.scanner.scan(source)
 
-        const dependencies = imports.map((specifier) => this.resolver.resolve(id, specifier))
+        const dependencies =  new Map<string, string>();
+
+        for (const specifier of imports) {
+            const resolved = this.resolver.resolve(id, specifier);
+            dependencies.set(specifier, resolved);
+        }
 
         const node: ModuleNode = {
             id,
@@ -42,7 +46,7 @@ export class ModuleGraph {
 
         this.modules.set(id, node)
 
-        for(const dependency of dependencies) {
+        for(const dependency of dependencies.values()) {
             await this.visit(dependency)
         }
     }

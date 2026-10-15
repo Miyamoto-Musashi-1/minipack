@@ -1,22 +1,30 @@
+import { parse } from 'acorn'
 
-import type { ModuleNode } from "./module-graph.js";
-
+import type { ModuleNode } from "./module-graph.js"
+import { SourceEditor } from './source-editor.js'
 export class ModuleTransformer {
   transform(
     module: ModuleNode,
     moduleIds: Map<string, number>
   ): string {
-    let code = module.source;
+    const ast = parse(module.source, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+    });
 
-    // 1. Transform named imports
-    // import { greet } from "./greet.js"
-    // -> const { greet } = require(1);
-    code = code.replace(
-      /import\s+\{\s*(\w+)\s*\}\s+from\s+["']([^"']+)["'];?/g,
-      (_, importedName: string, specifier: string) => {
-        const dependency = module.dependencies.find((dep) =>
-          dep.endsWith(specifier.replace("./", "/"))
-        );
+    const editor = new SourceEditor(module.source);
+    const exportedNames: string[] = [];
+
+    for (const node of ast.body) {
+      if (node.type === "ImportDeclaration") {
+
+        const specifier = node.source.value;
+
+        if (typeof specifier !== "string") {
+          throw new Error("Invalid import specifier");
+        }
+
+        const dependency = module.dependencies.get(specifier);
 
         if (!dependency) {
           throw new Error(`Cannot resolve ${specifier}`);
@@ -28,40 +36,75 @@ export class ModuleTransformer {
           throw new Error(`Missing module ID: ${dependency}`);
         }
 
-        return `const { ${importedName} } = require(${id});`;
+        const imports = node.specifiers.map((item) => {
+          if (item.type !== "ImportSpecifier") {
+            throw new Error("Only named imports supported");
+          }
+
+          const imported =
+            item.imported.type === "Identifier"
+              ? item.imported.name
+              : item.imported.value;
+
+          const local = item.local.name;
+
+          return imported === local
+            ? imported
+            : `${imported}: ${local}`;
+        });
+
+        const replacement =
+          imports.length > 0
+            ? `const { ${imports.join(", ")} } = require(${id});`
+            : `require(${id});`;
+
+        editor.replace(node.start, node.end, replacement);
       }
-    );
 
-    // 2. Transform exported constants
-    // export const prefix = "Hello";
-    // -> const prefix = "Hello";
-    // -> exports.prefix = prefix;
-    code = code.replace(
-      /export\s+const\s+(\w+)\s*=\s*([^;]+);?/g,
-      (_, name: string, value: string) => {
-        return `const ${name} = ${value};\nexports.${name} = ${name};`;
+      if (node.type === "ExportNamedDeclaration") {
+        const declaration = node.declaration;
+
+        if (!declaration) {
+          throw new Error("Re-exports not supported yet");
+        }
+
+        if (declaration.type === "FunctionDeclaration") {
+          if (!declaration.id) {
+            throw new Error("Anonymous function export");
+          }
+
+          exportedNames.push(declaration.id.name);
+        } else if (declaration.type === "VariableDeclaration") {
+          for (const declarator of declaration.declarations) {
+            if (declarator.id.type !== "Identifier") {
+              throw new Error(
+                "Destructured exports not supported yet"
+              );
+            }
+
+            exportedNames.push(declarator.id.name);
+          }
+        } else {
+          throw new Error(
+            `Unsupported export: ${declaration.type}`
+          );
+        }
+
+        // Remove only the "export" prefix.
+        editor.replace(
+          node.start,
+          declaration.start,
+          ""
+        );
       }
-    );
-
-    // 3. Transform exported functions
-    // Remove "export" without parsing the function body.
-    const exportedFunctions: string[] = [];
-
-    code = code.replace(
-      /\bexport\s+function\s+([a-zA-Z_$][\w$]*)\s*\(/g,
-      (_, name: string) => {
-        exportedFunctions.push(name);
-
-        return `function ${name}(`;
-      }
-    );
-
-    // 4. Append function exports after the module source.
-    // This avoids breaking template literals and nested braces.
-    for (const name of exportedFunctions) {
-      code += `\nexports.${name} = ${name};`;
     }
 
-    return code;
+    const transformed = editor.generate();
+
+    const exports = exportedNames
+      .map((name) => `exports.${name} = ${name};`)
+      .join("\n");
+
+    return `${transformed}\n${exports}`;
   }
 }
